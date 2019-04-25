@@ -1,0 +1,63 @@
+{
+    "class": "AS3",
+    "action": "deploy",
+    "persist": true,
+    "declaration": {
+      "class": "ADC",
+      "schemaVersion": "3.0.0",
+      "id": "789ghi",
+      "label": "Sample 3",
+      "remark": "SMPP Virtual Server",
+      "smpp": {
+        "class": "Tenant",
+        "SMPP_VS": {
+          "class": "Application",
+          "template": "tcp",
+          "serviceMain": {
+            "class": "Service_TCP",
+            "iRules": ["SMPP_iRule"],
+            "virtualAddresses": [
+              "10.0.253.114"
+            ],
+            "virtualPort": 2774,
+            "pool": "smpp_pool"
+          },
+          "smpp_pool": {
+            "class": "Pool",
+            "monitors": [{
+              "use": "smpp_link_monitor"
+            }],
+            "members": [{
+              "servicePort": 2775,
+              "serverAddresses": [
+                "10.0.253.45"
+              ],
+              "servicePort": 2776,
+              "serverAddresses": [
+                "10.0.253.45"
+              ]
+            }],
+            "members": [{
+              "servicePort": 2776,
+              "serverAddresses": [
+                "10.0.253.45"
+              ]
+            }]
+          },
+          "smpp_link_monitor": {
+            "class": "Monitor",
+            "monitorType": "tcp",
+            "send": "\\x00\\x00\\x00\\x33\\x00\\x00\\x00\\x09\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x73\\x6d\\x70\\x70\\x63\\x6c\\x69\\x65\\x6e\\x74\\x31\\x00\\x70\\x61\\x73\\x73\\x77\\x6f\\x72\\x64\\x00\\x4c\\x6f\\x67\\x69\\x63\\x61\\x00\\x34\\x01\\x01\\x31\\x31\\x2a\\x00",
+            "receive": "\\x00\\x00\\x00\\x18\\x80\\x00\\x00\\x09\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x53\\x4d\\x50\\x50\\x53\\x69\\x6d\\x00",
+            "adaptive": false
+          },
+           "SMPP_iRule": {
+               "class": "iRule",
+               "iRule": {
+                   "url": "https://raw.githubusercontent.com/rduchez/SMPP/master/smpp_irule"
+               }
+            }
+        }
+      }
+    }
+  }
