@@ -1,0 +1,116 @@
+#the key of the rule is tcp::collect -all on server connected event.
+    when RULE_INIT {
+        set static::lb_pool "smpp_pool"
+        set static::debug 0
+    
+    }
+
+    when CLIENT_ACCEPTED {
+        set s_seq_idx 1
+        set first_bind_resp 1
+        set lbnumber 0
+        set client_ip [IP::remote_addr]
+        set client_port [TCP::client_port]
+        TCP::collect ;#start collect client data
+
+    }
+    when CLIENT_DATA {
+
+        while { [TCP::payload length] >= 16 } {    ;#min length of pdu is 16 bytes
+            binary scan [TCP::payload] IH8IIa* len oper status seq p
+            if { [TCP::payload length] < $len } {
+                TCP::collect $len ;# get pdu, min pdu is 16 bytes
+                return
+            }
+            if { $static::debug > 0 } then {log local0. "oper value is $oper" }
+            switch -glob $oper {
+                00000001 -
+                00000002 -
+                00000009 {
+                    set bind_message [TCP::payload $len]
+                    if { $static::debug > 0 } then {log local0. "bind operation detected" }
+                }
+                00000004 {
+                    # submit_sm
+                    if { $static::debug > 0 } then {log local0. "submit_sm detected" }
+                    set p [string range $p [expr [string first \x00 $p]+1] end]
+                    binary scan $p cca* ston snpi p
+                    set p [string range $p [expr [string first \x00 $p]+1] end]
+                    binary scan $p ccA* dton dnpi p
+                    set dest [getfield $p \x00 1] ;# get destination address
+                    set p [string range $p [expr [string first \x00 $p]+1] end]
+                    if { $static::debug > 0 } then {log local0. "p is $p" }
+                    binary scan $p c udh
+                    set udh [expr $udh & 64] ;# long message when the message is already 1
+                    if { $static::debug > 0 } then {log local0. "udh is $udh" }
+                    # if the UDH is 1 then persist to destination address.
+                    if {$udh eq 64} {
+                            set lbnumber [string range $dest [expr [string length $dest]-2] end] ;# ambil 2 digit terakhir dari destination address
+                    } else {
+                            set lbnumber [expr $lbnumber + 1]    
+                    }
+
+                    set pool_member [lindex [active_members -list $static::lb_pool] [expr $lbnumber % [active_members $static::lb_pool]]];# select pool member (balancing)
+                    node [lindex $pool_member 0] [lindex $pool_member 1]
+                    log local0. "Request: SDP: $client_ip:$client_port,   CommandID=$oper, Seq=$seq pool_member=[lindex $pool_member 0]:[lindex $pool_member 1], UDH=$udh"  
+                }
+                8* {
+                    # response for query that is send from server, rewrite seq
+                    if { [info exists s_seq_map($seq)] } {
+                        set s_old_seq [lindex $s_seq_map($seq) 0] ;# get seq number
+                        TCP::payload replace 12 4 [binary format I $s_old_seq] ;# replace seq 
+                        set addr [lindex $s_seq_map($seq) 1]
+                        set port [lindex $s_seq_map($seq) 2]
+                        # use pool or node command
+                        pool [LB::server pool] member $addr $port ;# send to correct pool
+                        unset s_seq_map($seq)
+                    }
+                }
+            }
+
+
+            TCP::release $len
+            TCP::notify request
+        }
+        TCP::collect
+    }
+    when SERVER_CONNECTED {
+        if { $first_bind_resp } {
+            TCP::collect
+        } else {
+            TCP::collect -all ;#delay sending submit_sm. It will be sent after send bind_message
+            TCP::respond $bind_message ;# send bind message to pool member
+        }
+    }
+    when SERVER_DATA {
+        while { [TCP::payload length] >= 16 } {
+            binary scan [TCP::payload] IH8II len oper status seq
+            log local0. "Respond: CommandID=$oper, Seq=$seq "  
+            if { [TCP::payload length] < $len } {
+                TCP::collect $len
+                return
+            }
+            switch -glob $oper {
+                0* {
+                    # it the query send from server, rewrite seq
+                    TCP::payload replace 12 4 [binary format I $s_seq_idx]
+                    set s_seq_map($s_seq_idx) "$seq [IP::remote_addr] [TCP::remote_port]"
+                    incr s_seq_idx
+                }
+                80000001 -
+                80000002 -
+                80000009 {
+                    # bind response
+                    if { $first_bind_resp } {
+                        set first_bind_resp 0
+                    } else {
+                        TCP::payload replace 0 [TCP::payload length] ""   ;# respond bind not sent to the client (swallow it)
+                        set len 0
+                    }
+                }
+            }
+            TCP::release $len
+            TCP::notify response
+        }
+        TCP::collect
+    }
