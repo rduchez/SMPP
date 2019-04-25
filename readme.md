@@ -1,4 +1,4 @@
-#SMPP iRule
+# SMPP iRule
 
 Requirements for this irule are as follows:
 1. Long lived SMPP binds (on both sides preferably, but hard requirement on the source side)
