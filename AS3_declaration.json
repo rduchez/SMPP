@@ -5,8 +5,8 @@
     "declaration": {
       "class": "ADC",
       "schemaVersion": "3.0.0",
-      "id": "789ghi",
-      "label": "Sample 3",
+      "id": "changetouniqueid",
+      "label": "smpp vs setup",
       "remark": "SMPP Virtual Server",
       "smpp": {
         "class": "Tenant",
@@ -27,21 +27,18 @@
             "monitors": [{
               "use": "smpp_link_monitor"
             }],
-            "members": [{
-              "servicePort": 2775,
-              "serverAddresses": [
-                "10.0.253.45"
-              ],
+            "members": [
+                {
               "servicePort": 2776,
               "serverAddresses": [
                 "10.0.253.45"
               ]
-            }],
-            "members": [{
-              "servicePort": 2776,
-              "serverAddresses": [
-                "10.0.253.45"
-              ]
+            },
+            {
+                "servicePort": 2775,
+                "serverAddresses": [
+                    "10.0.253.45"
+                    ]
             }]
           },
           "smpp_link_monitor": {
