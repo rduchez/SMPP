@@ -17,7 +17,7 @@
             "class": "Service_TCP",
             "iRules": ["SMPP_iRule"],
             "virtualAddresses": [
-              "10.0.253.114"
+              "10.0.253.122"
             ],
             "virtualPort": 2774,
             "pool": "smpp_pool"
@@ -27,8 +27,7 @@
             "monitors": [{
               "use": "smpp_link_monitor"
             }],
-            "members": [
-                {
+            "members": [{
               "servicePort": 2776,
               "serverAddresses": [
                 "10.0.253.45"
@@ -48,12 +47,12 @@
             "receive": "\\x00\\x00\\x00\\x18\\x80\\x00\\x00\\x09\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x53\\x4d\\x50\\x50\\x53\\x69\\x6d\\x00",
             "adaptive": false
           },
-           "SMPP_iRule": {
-               "class": "iRule",
-               "iRule": {
-                   "url": "https://raw.githubusercontent.com/rduchez/SMPP/master/smpp_irule"
-               }
-            }
+          "SMPP_iRule": {
+              "class": "iRule",
+              "iRule": {
+                  "url": "https://raw.githubusercontent.com/rduchez/SMPP/master/smpp_irule"
+              }
+          }
         }
       }
     }
