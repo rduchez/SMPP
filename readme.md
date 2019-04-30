@@ -23,4 +23,5 @@ Trying to do multi part message - opensmpp tool may not be sufficient at this st
 
 Consists of generating requests accross 2 servers using smppsim and opensmpp
 
+The AS3 decalration does not include the mblb configuration at present - issue #94 was posted to perspective https://github.com/F5Networks/f5-appsvcs-extension/issues/94
 
