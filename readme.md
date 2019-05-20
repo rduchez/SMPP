@@ -53,3 +53,9 @@ ltm virtual /smpp/serviceMain {
     }
 
 
+sudo apt-get install docker.io
+sudo docker run -d -p 2775:2775 -p 88:88 --name smppsim --rm wiredthing/smppsim
+sudo docker ps
+sudo docker run -d -p 2776:2775 -p 89:88 --name smppsim --rm wiredthing/smppsim
+sudo docker run -d -p 2776:2775 -p 89:88 --name smppsim2 --rm wiredthing/smppsim
+sudo docker stop smppsim

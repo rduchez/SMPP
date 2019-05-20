@@ -4,7 +4,7 @@
 ## @version = 3
 ## @date = 22 Aug 2018
 ## @author = Vernon Wells (vwells@f5.com)
-##
+## @edited by Romain Duchez (romain@f5.com) for customer use 
 ## This iRule facilitates routing SMPP v3.4 messages.  It assumes that:
 ##   1. all SMSCs are in a single pool
 ##   2. all ESMEs connect as dynamic peers
@@ -56,6 +56,9 @@
 ##                                   There is no timeout method for this.  It is removed when a matching
 ##                                   response comes back, or is overwritten on counter wrap (at 2**32-1)
 ##
+##  - p                            : this is the payload storage for binary scan and other maninupulation 
+##                                   it will change value as the payload is parsed, scanned and modified
+##                                   this is necessary because the SMPP header length changes based on numbering type
 ## Variables on the server-side flows include:
 ##   - proxy_side                  : the literal "client"
 ##   - queued_messages             : a list of messages queued while waiting for bind procedure completion
@@ -92,6 +95,8 @@ proc smpp_log_debug {msg} {
 }
 
 when RULE_INIT {
+    # Clean up before shipping romain: 
+    set static::debug 1
     set static::smpp_config_elements_dg "smpp-config-elements"
 
     array set static::smpp_command_map [list 1 bind_receiver 2 bind_transmitter 3 query_sm 4 submit_sm 5 deliver_sm 6 unbind 7 replace_sm 8 cancel_sm 9 bind_transceiver 11 outbind 21 enquire_link 33 submit_multi 259 data_sm 2147483648 generic_nack 2147483649 bind_receiver_resp 2147483650 bind_transmitter_resp 2147483651 query_sm_resp 2147483652 submit_sm_resp 2147483653 deliver_sm_resp 2147483654 unbind_resp 2147483655 replace_sm_resp 2147483656 cancel_sm_resp 2147483657 bind_transceiver_resp 2147483669 enquire_link_resp 2147483681 submit_multi_resp 2147483906 alert_notification 2147483907 data_sm_resp]
@@ -101,7 +106,7 @@ when CLIENT_ACCEPTED {
     set proxy_side "clientside"
     set peer_state "waiting_for_bind"
     set incoming_buf ""
-
+    set p ""
     set local_seq_number 1      ;# 1 is reserved for bind message, so start at 2
     array set seq_rewrite_table [list]
 
@@ -118,13 +123,15 @@ when CLIENT_ACCEPTED {
 
 when CLIENT_DATA {
     append incoming_buf [TCP::payload]
-
+    call smpp_log_debug "payload is [TCP::payload]"
     TCP::release
     TCP::collect
-
+    
+    set is_concatenated 0
+    
     # Need at least 16 octets for a header, and thus, at least 16 octets for a PDU
     if { [string length $incoming_buf] >= 16 } {
-        binary scan $incoming_buf IIII command_length command_id command_status sequence_number
+        binary scan $incoming_buf IIIIa* command_length command_id command_status sequence_number p
 
         # convert $command_id to its unsigned value
         set command_id [expr { $command_id & 0xffffffff }]
@@ -176,6 +183,7 @@ when CLIENT_DATA {
                     set peer_state "bound"
                 }
                 else {
+                    call smpp_log_debug "I really should not be here..."
                     #send_error_message()
                 }
             }
@@ -208,6 +216,30 @@ when CLIENT_DATA {
 
             default {
                 call smpp_log_debug "Routing message to serverside"
+                # Determine whether this is a contatenated message looking for the UDH indicator set to 1
+                set p [string range $p [expr [string first \x00 $p]+1] end]
+                binary scan $p cca* ston snpi p
+                set p [string range $p [expr [string first \x00 $p]+1] end]
+                binary scan $p ccA* dton dnpi p
+                set dest [getfield $p \x00 1] ;# get destination address
+                set p [string range $p [expr [string first \x00 $p]+1] end]
+                if { $static::debug > 0 } then {log local0. "p is $p" }
+                binary scan $p c udh
+                # UDH indicator is set if 7th bit of the octet is set with a dec value of 64
+                # bitwise anding any value with 64, if the 7th bit is set will return 64 -
+                set udh [expr $udh & 64] ;# long message when the message is already 1
+                if { $static::debug > 0 } then {log local0. "udh is $udh" }
+                # once the UDH indicator bit is detected, it is used to choose a static pool member based on the last 
+                # 2 digits of the destination number (stateless persistence) 
+                if { $udh eq 64 } {
+                    set smpp_smsc_pool [class lookup "smsc-pool-name" $static::smpp_config_elements_dg]
+                    set lbnumber [string range $dest [expr [string length $dest]-2] end] ;# use the last 2 digits of the destination address
+                    set pool_member [lindex [active_members -list $smpp_smsc_pool] [expr $lbnumber % [active_members $smpp_smsc_pool]]];# select pool member (balancing)
+                    # node [lindex $pool_member 0] [lindex $pool_member 1]
+                    set is_concatenated 1
+                    #GENERICMESSAGE::peer name temp_peer
+                    }
+
                 GENERICMESSAGE::message create [string range $incoming_buf 0 [expr { $command_length - 1 }]]
             }
         }
@@ -253,9 +285,11 @@ when SERVER_CONNECTED {
     set peer_name "[IP::server_addr]:[TCP::server_port]"
     set my_vs_or_tc_name [lindex [split [MR::transport]] 1]
     set my_vs_or_tc_type "config"
-
+   
     GENERICMESSAGE::peer name $peer_name
-
+    
+    log local0. "genericmessage peer name is $peer_name"
+    
     call smpp_log_debug "peer_name = ($peer_name); my_vs_or_tc_name = ($my_vs_or_tc_name); my_vs_or_tc_type = ($my_vs_or_tc_type)"
 
     set queued_messages [list]
@@ -465,6 +499,11 @@ when MR_INGRESS {
             call smpp_log_debug "Selected esme = ($selected_esme), virtual = ($selected_esme_virtual)"
 
             MR::message route virtual $selected_esme_virtual host $selected_esme
+        } else {
+          # forcing "persistence" for concatenated messages
+          if { $is_concatenated == 1 } { 
+                MR::message route config mr-transport-smpp host "[lindex $pool_member 0]:[lindex $pool_member 1]"
+        }
         }
     }
     elseif { [info exists seq_based_route_info] } {
@@ -472,6 +511,7 @@ when MR_INGRESS {
         call smpp_log_debug "Re-routing to [lindex $seq_based_route_info 2] ([lindex $seq_based_route_info 3]) host ([lindex $seq_based_route_info 1])"
         MR::message route [lindex $seq_based_route_info 2] [lindex $seq_based_route_info 3] host [lindex $seq_based_route_info 1]
     }
+
 }
 
 
