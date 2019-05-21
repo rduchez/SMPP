@@ -42,3 +42,6 @@ sudo docker ps
 sudo docker run -d -p 2776:2775 -p 89:88 --name smppsim --rm wiredthing/smppsim
 sudo docker run -d -p 2776:2775 -p 89:88 --name smppsim2 --rm wiredthing/smppsim
 sudo docker stop smppsim
+
+resources: 
+https://tstdmzdevcentral.olympus.f5net.com/wiki/iRules.MR__peer.ashx
