@@ -64,7 +64,88 @@ ltm message-routing generic transport-config mr-transport-smpp {
         mr-protocol-smpp { }
     }
     rules {
-        smpp
+        __smpp_basic
+    }
+}
+ltm node smsc01 {
+    address 10.0.253.250
+}
+ltm persistence global-settings { }
+ltm pool pool-smsc-static-peers {
+    members {
+        smsc01:smpp {
+            address 10.0.253.250
+            session monitor-enabled
+            state up
+admin@(ip-10-0-255-135)(cfg-sync Standalone)(Active)(/Common)(tmos)# q
+[admin@ip-10-0-255-135:Active:Standalone] ~ # tmsh list ltm
+ltm data-group internal smpp-config-elements {
+    records {
+        bigip-system-id {
+            data smppclient1
+        }
+        bigip-system-id-password {
+            data password
+        }
+        smsc-pool-name {
+            data /Common/pool-smsc-static-peers
+        }
+        smsc-transport-config-name {
+            data /Common/mr-protocol-smpp
+        }
+    }
+    type string
+}
+ltm default-node-monitor {
+    rule none
+}
+ltm dns analytics global-settings { }
+ltm dns cache global-settings { }
+ltm global-settings connection { }
+ltm global-settings general {
+    share-single-mac vmw-compat
+}
+ltm global-settings rule { }
+ltm global-settings traffic-control { }
+ltm message-routing generic peer mr-peer-smscs {
+    description "SMSC Static Peers"
+    pool pool-smsc-static-peers
+    transport-config mr-transport-smpp
+}
+ltm message-routing generic protocol mr-protocol-smpp {
+    app-service none
+    description "Short Message Peer-to-Peer Protocol"
+    disable-parser yes
+    no-response yes
+}
+ltm message-routing generic protocol mr-protocol-smpp-control {
+    app-service none
+    description "smpp internal messaging"
+    disable-parser yes
+    no-response yes
+}
+ltm message-routing generic route mr-route-smpp-default {
+    description "MR Route to all SMSCs"
+    peers {
+        mr-peer-smscs
+    }
+}
+ltm message-routing generic router mr-router-smpp {
+    app-service none
+    description "MR Router for SMPP Traffic"
+    routes {
+        mr-route-smpp-default
+    }
+}
+ltm message-routing generic transport-config mr-transport-smpp {
+    description "Short Message Peer-to-Peer Static Peer Transport"
+    ip-protocol tcp
+    profiles {
+        f5-tcp-lan { }
+        mr-protocol-smpp { }
+    }
+    rules {
+        __smpp_basic
     }
 }
 ltm node smsc01 {
@@ -86,36 +167,26 @@ ltm pool pool-smsc-static-peers {
     }
     monitor gateway_icmp
 }
-ltm rule smpp {
+ltm rule __smpp_basic {
 ##
 ## Simple Message Peer-to-Peer (SMPP) system_type based routing and bind management
 ##
-## @version = 3
-## @date = 22 Aug 2018
+## @version = 1
+## @date = 13 May 2019
 ## @author = Vernon Wells (vwells@f5.com)
+## @edited by Romain Duchez (romain@f5.com)
 ##
 ## This iRule facilitates routing SMPP v3.4 messages.  It assumes that:
 ##   1. all SMSCs are in a single pool
 ##   2. all ESMEs connect as dynamic peers
-##   3. all binds are transceiver type
-##   4. each SMSC and ESME connects with a single bound session
-## When all ESMEs disconnect, all SMSCs must be unbound (and the associated transports must be
-## closed).  Conversely, when all SMSCs disconnect, all ESMEs must be unbound.
 ##
-## There is an associated iRule attached to another Virtual Server that is used for signaling
-## from the control plane.  It is referred to here as the "internal message virtual server".
-##
-## The following session table entries are used in this rule:
-##    - smpp-bound-esme-count
-##    - smpp-bound-smsc-count
-## These are both 'incr' type entries, and provide a count of the number of EMSEs (for the
-## first table set) and SMSCs (for the second table set) that are currently bound.
-## In addition, this sub-table contains a list of client-side (esme) peers by peer name.
-## The value for each is the virtual through which it is connected.
-##    - smpp-bound-esme-list
+## This provides SMPP per-message load-balancing with response return matching.
+## It also supports round-robin LB for SMPP requests from SMSC to ESME side.
+## An addition to the rule provides for persitence when concatenated messages traverse the BIG-IP and
+## are router to the same SMSC
 ##
 ## The following data-group is referenced in RULE_INIT:
-##    - static::smpp_config_elements_dg
+##    - static::basic_smpp_lb_config
 ## It has these keys:
 ##    - smsc-pool-name                : name of the SMSC pool
 ##    - smsc-transport-config-name    : name of the transport config used toward SMSC pool. Must include partition (e.g., /Common/tc01)
@@ -124,56 +195,53 @@ ltm rule smpp {
 ##    - asserted-system-type          : system_type asserted toward SMSCs by BIGIP
 ##
 ## Variables on the client-side flows include:
-##   - proxy_side                  : the literal "client"
-##   - incoming_buf                : a spooling buffer of incoming TCP data that has not yet been
+##   + proxy_side                  : the literal "client"
+##   + incoming_buf                : a spooling buffer of incoming TCP data that has not yet been
 ##                                   handled as a PDU
-##   - command_length              : command length field extracted from last incoming PDU
-##   - command_id                  : command id field extracted from last incoming PDU (as unsigned value)
-##   - command_status              : command status field extracted from last incoming PDU
-##   - sequence_number             : sequence number field extracted from last incoming PDU
-##   - is_request_msg              : if the last received message is a request message, set to non-zero; otherwise 0
-##   - client_close_guard          : "guard" variable to ensure CLIENT_CLOSED procedures only happen once per flow
-##                                 : (see comments in CLIENT_CLOSED)
-##   - peer_state                  : the bind state of the peer, must be "waiting_for_bind" or "bound"
-##   - peer_name                   : the name of this peer, except in the _EGRESS events, in which case, it is the reverse side peer_name
-##   - my_vs_or_tc_name            : name of the Virtual Server for the client connection
-##   - my_vs_or_tc_type            : the literal "virtual"
-##   - local_seq_number            : a sequence number for egress rewriting local to this virtual server.  This
+##   + command_length              : command length field extracted from last incoming PDU
+##   + command_id                  : command id field extracted from last incoming PDU (as unsigned value)
+##   + command_status              : command status field extracted from last incoming PDU
+##   + sequence_number             : sequence number field extracted from last incoming PDU
+##   + is_concatenated             : variable used for signaling that a message is a concatenated message and requires specific message routing
+##   + is_request_msg              : if the last received message is a request message, set to non-zero; otherwise 0
+##   + peer_state                  : the bind state of the peer, must be "waiting_for_bind" or "bound"
+##   + peer_name                   : the name of this peer, except in the _EGRESS events, in which case, it is the reverse side peer_name
+##   + my_vs_or_tc_name            : name of the Virtual Server for the client connection
+##   + my_vs_or_tc_type            : the literal "virtual"
+##   + local_seq_number            : a sequence number for egress rewriting local to this virtual server.  This
 ##                                   is the last sequence number used
-##   - seq_rewrite_table           : associative array, indexed by "$proxy_side-$rewritten_seq_num", value is
+##   + p                           : processing payload - this variable holds what ever is left of the incoming payload after
+##                                   binary scan processing for the next step (e.g. extract values for UDH indicator etc.)
+##   + seq_rewrite_table           : associative array, indexed by "$proxy_side-$rewritten_seq_num", value is
 ##                                   list of { $original_seq_num $server_peer_name "config" $server_transport_config_name }
 ##                                   There is no timeout method for this.  It is removed when a matching
 ##                                   response comes back, or is overwritten on counter wrap (at 2**32-1)
 ##
-##  - p                            : this is the payload storage for binary scan and other maninupulation
-##                                   it will change value as the payload is parsed, scanned and modified
-##                                   this is necessary because the SMPP header length changes based on numbering type
 ## Variables on the server-side flows include:
-##   - proxy_side                  : the literal "client"
-##   - queued_messages             : a list of messages queued while waiting for bind procedure completion
-##   - peer_state                  : the bind state of the peer, must be "waiting_for_bind_resp" or "bound"
-##   - peer_name                   : the name of this peer, except in the _EGRESS events, in which case, it is the reverse side peer_name
-##   - my_vs_or_tc_name            : name of the transport-config object for this serversise connection
-##   - my_vs_or_tc_type            : the literal "config"
-##   - incoming_buf                : a spooling buffer of incoming TCP data that has not yet been
+##   + proxy_side                  : the literal "server"
+##   + queued_messages             : a list of messages queued while waiting for bind procedure completion
+##   + peer_state                  : the bind state of the peer, must be "waiting_for_bind_resp" or "bound"
+##   + peer_name                   : the name of this peer, except in the _EGRESS events, in which case, it is the reverse side peer_name
+##   + my_vs_or_tc_name            : name of the transport-config object for this serversise connection
+##   + my_vs_or_tc_type            : the literal "config"
+##   + incoming_buf                : a spooling buffer of incoming TCP data that has not yet been
 ##                                   handled as a PDU
-##   - local_seq_number            : a sequence number for egress rewriting local to this transport.  This
+##   + local_seq_number            : a sequence number for egress rewriting local to this transport.  This
 ##                                   is the last sequence number used
-##   - seq_rewrite_table           : associative array, indexed by "$proxy_side-$rewritten_seq_num", value is
+##   + seq_rewrite_table           : associative array, indexed by "$proxy_side-$rewritten_seq_num", value is
 ##                                   list of { $original_seq_num $peer_name "virtual" $client_vs_name }
 ##                                   There is no timeout method for this.  It is removed when a matching
 ##                                   response comes back, or is overwritten on counter wrap (at 2**32-1)
-##   - my_system_id                : system_id asserted on bind
-##   - password                    : password asserted on bind
-##   - system_type                 : system_type asserted on bind
-##   - command_length              : command length field extracted from last incoming PDU
-##   - command_id                  : command id field extracted from last incoming PDU (as unsigned value)
-##   - command_status              : command status field extracted from last incoming PDU
-##   - sequence_number             : sequence number field extracted from last incoming PDU
-##   - is_request_msg              : if the last received message is a request message, set to non-zero; otherwise 0
-##   - route_select_counter        : a counter used to facilitate custom routing toward clientside, it is a modulo counter
+##   + my_system_id                : system_id asserted on bind
+##   + password                    : password asserted on bind
+##   + system_type                 : system_type asserted on bind
+##   + command_length              : command length field extracted from last incoming PDU
+##   + command_id                  : command id field extracted from last incoming PDU (as unsigned value)
+##   + command_status              : command status field extracted from last incoming PDU
+##   + sequence_number             : sequence number field extracted from last incoming PDU
+##   + is_request_msg              : if the last received message is a request message, set to non-zero; otherwise 0
+##   + route_select_counter        : a counter used to facilitate custom routing toward clientside, it is a modulo counter
 ##
-
 
 proc smpp_log_debug {msg} {
     if { [clientside] } {
@@ -191,11 +259,13 @@ when RULE_INIT {
     array set static::smpp_command_map [list 1 bind_receiver 2 bind_transmitter 3 query_sm 4 submit_sm 5 deliver_sm 6 unbind 7 replace_sm 8 cancel_sm 9 bind_transceiver 11 outbind 21 enquire_link 33 submit_multi 259 data_sm 2147483648 generic_nack 2147483649 bind_receiver_resp 2147483650 bind_transmitter_resp 2147483651 query_sm_resp 2147483652 submit_sm_resp 2147483653 deliver_sm_resp 2147483654 unbind_resp 2147483655 replace_sm_resp 2147483656 cancel_sm_resp 2147483657 bind_transceiver_resp 2147483669 enquire_link_resp 2147483681 submit_multi_resp 2147483906 alert_notification 2147483907 data_sm_resp]
 }
 
+
 when CLIENT_ACCEPTED {
     set proxy_side "clientside"
     set peer_state "waiting_for_bind"
     set incoming_buf ""
-    set p ""
+    set is_concatenated 0
+
     set local_seq_number 1      ;# 1 is reserved for bind message, so start at 2
     array set seq_rewrite_table [list]
 
@@ -212,11 +282,9 @@ when CLIENT_ACCEPTED {
 
 when CLIENT_DATA {
     append incoming_buf [TCP::payload]
-    call smpp_log_debug "payload is [TCP::payload]"
+
     TCP::release
     TCP::collect
-
-    set is_concatenated 0
 
     # Need at least 16 octets for a header, and thus, at least 16 octets for a PDU
     if { [string length $incoming_buf] >= 16 } {
@@ -226,15 +294,14 @@ when CLIENT_DATA {
         set command_id [expr { $command_id & 0xffffffff }]
 
         if { ($command_id & 0x80000000) == 0 } {
-            set is_request_msg 1
+            set is_request_msg true
         } else {
-            set is_request_msg 0
+            set is_request_msg false
         }
 
-        call smpp_log_debug "is_request_msg = ($is_request_msg); command_length = ($command_length); command_id = ($command_id); command_name = ($static::smpp_command_map($command_id)); command_status = ($command_status); sequence_number = ($sequence_number)"
+        call smpp_log_debug "is_request_msg = ($is_request_msg); command_length = ($command_length); command_id = (0x[format %x $command_id]); command_name = ($static::smpp_command_map($command_id)); command_status = ($command_status); sequence_number = ($sequence_number)"
 
         if { $command_length > [string length $incoming_buf] } {
-            # not enough octets in collected buf for length of next PDU, so its an incomplete PDU
             call smpp_log_debug "Not enough octets yet collected for complete PDU"
             return
         }
@@ -244,7 +311,6 @@ when CLIENT_DATA {
                 call smpp_log_debug "Received bind_* command"
 
                 if { $peer_state eq "waiting_for_bind" } {
-                    # send bind response
                     set resp_command_id [expr { 0x80000000 | $command_id }]
 
                     set my_system_id [class lookup "bigip-system-id" $static::smpp_config_elements_dg]
@@ -252,19 +318,7 @@ when CLIENT_DATA {
                     # +1 is for null octet after system_id
                     set response_message_length [expr { 16 + [string length $my_system_id] + 1 }]
 
-                    call smpp_log_debug "resp_command_id = ($resp_command_id); resp_command_name = (command_name = ($static::smpp_command_map($resp_command_id)); my_system_id = ($my_system_id)"
-
-                    if { [table incr "smpp-bound-esme-count"] == 1 } {
-                        # these connections may be (potentially very) long lived, so we
-                        # don't use timer management for this entry
-                        table set lifetime "smpp-bound-esme-count" indef
-                        table set timeout "smpp-bound-esme-count" indef
-                    }
-
-                    table set -subtable "smpp-bound-esme-list" $peer_name [virtual] indef indef
-
-                    call smpp_log_debug "Priming config = ([class lookup "smsc-transport-config-name" $static::smpp_config_elements_dg]), pool = ([class lookup "smsc-pool-name" $static::smpp_config_elements_dg])"
-                    MR::prime config [class lookup "smsc-transport-config-name" $static::smpp_config_elements_dg] pool [class lookup "smsc-pool-name" $static::smpp_config_elements_dg]
+                    call smpp_log_debug "resp_command_id = ($resp_command_id); resp_command_name = ($static::smpp_command_map($command_id)); my_system_id = ($my_system_id)"
 
                     call smpp_log_debug "Responding to client with bind response"
                     TCP::respond [binary format IIIIa*x $response_message_length $resp_command_id 0 $sequence_number $my_system_id]
@@ -272,24 +326,23 @@ when CLIENT_DATA {
                     set peer_state "bound"
                 }
                 else {
-                    call smpp_log_debug "I really should not be here..."
                     #send_error_message()
                 }
             }
 
             2147483649 - 2147483650 - 2147483657 {  ;# bind_*_resp command
-                log local0. "Received bind resp from peer ($peer_name).  Ignoring."  ;# T=I
+                call smpp_log_debug "Received bind resp from peer ($peer_name).  Ignoring."
             }
 
             6 {                                     ;# unbind command
-                log local0. "Received unbind request from peer ($peer_name).  Sending unbind_resp and closing transport."     ;# T=I
+                call smpp_log_debug "Received unbind request from peer ($peer_name).  Sending unbind_resp and closing transport."
                 TCP::respond [binary format IIII 16 0x80000006 0 $sequence_number]
                 TCP::close
                 return
             }
 
             2147483654 {                            ;# unbind_resp command
-                log local0. "Received unbind response from peer ($peer_name).  Closing transport."     ;# T=I
+                call smpp_log_debug "Received unbind response from peer ($peer_name).  Closing transport."
                 TCP::close
             }
 
@@ -300,7 +353,6 @@ when CLIENT_DATA {
 
             2147483669 {                            ;# enquire_link_resp command
                 call smpp_log_debug "Received enquire_link response from peer ($peer_name).  Ignoring."
-                # ignore the message
             }
 
             default {
@@ -324,11 +376,12 @@ when CLIENT_DATA {
                     set smpp_smsc_pool [class lookup "smsc-pool-name" $static::smpp_config_elements_dg]
                     set lbnumber [string range $dest [expr [string length $dest]-2] end] ;# use the last 2 digits of the destination address
                     set pool_member [lindex [active_members -list $smpp_smsc_pool] [expr $lbnumber % [active_members $smpp_smsc_pool]]];# select pool member (balancing)
-                    # node [lindex $pool_member 0] [lindex $pool_member 1]
+                    # is_concatenated is used in message routing below
                     set is_concatenated 1
                     #GENERICMESSAGE::peer name temp_peer
                     }
-
+                # clear p as is no longer needed
+                unset p
                 GENERICMESSAGE::message create [string range $incoming_buf 0 [expr { $command_length - 1 }]]
             }
         }
@@ -339,36 +392,6 @@ when CLIENT_DATA {
 }
 
 
-when CLIENT_CLOSED {
-    # Table commands can set aside flow handling, causing the reaper to later try to re-close
-    # This can cause CLIENT_CLOSED to run more than once for the same flow.  We only want to
-    # decrement the bind counting table by one, so put use a guard variable to ensure that we
-    # only perform the following steps once on this flow
-    if { ![info exists client_close_guard] } {
-        set client_close_guard 1
-
-        set binds [table incr "smpp-bound-esme-count" -1]
-
-        if { $binds < 0 } {
-            log local0.warn "WARNING: Bound ESME count is less than zero (usigned count is $binds)."
-            # we cannot precisely get out of this situation because 'table set' is not atomic, but we'll try,
-            # knowing that the count may have changed between the time we did the previous 'table incr' and
-            # when we do this
-            table set "smpp-bound-esme-count" 0
-            table delete -subtable "smpp-bound-esme-list" $peer_name
-        }
-        elseif { $binds == 0 } {
-            table delete -subtable "smpp-bound-esme-list" $peer_name
-            log local0. "All smpp dynamic peers disconnected"
-        }
-        else {                                                      ;# T=I
-            log local0. "Remaining bound ESMEs is ($binds)"         ;# T=I
-        }                                                           ;# T=I
-    }
-}
-
-
-
 when SERVER_CONNECTED {
     set proxy_side "serverside"
     set peer_name "[IP::server_addr]:[TCP::server_port]"
@@ -376,8 +399,6 @@ when SERVER_CONNECTED {
     set my_vs_or_tc_type "config"
 
     GENERICMESSAGE::peer name $peer_name
-
-    log local0. "genericmessage peer name is $peer_name"
 
     call smpp_log_debug "peer_name = ($peer_name); my_vs_or_tc_name = ($my_vs_or_tc_name); my_vs_or_tc_type = ($my_vs_or_tc_type)"
 
@@ -404,15 +425,6 @@ when SERVER_CONNECTED {
 
     call smpp_log_debug "Setting count smpp-bound-smsc-count"
 
-    if { [table incr "smpp-bound-smsc-count"] == 1 } {
-        # these connections may be (potentially very) long lived, so we
-        # don't use timer management for this entry
-        table set lifetime "smpp-bound-smsc-count" indef
-        table set timeout "smpp-bound-smsc-count" indef
-    }
-
-    set server_close_guard 0
-
     TCP::collect
 }
 
@@ -438,16 +450,16 @@ when SERVER_DATA {
         set command_id [expr { $command_id & 0xffffffff }]
 
         if { ($command_id & 0x80000000) == 0 } {
-            set is_request_msg 1
+            set is_request_msg true
         } else {
-            set is_request_msg 0
+            set is_request_msg false
         }
 
         call smpp_log_debug "is_request_msg = ($is_request_msg); command_length = ($command_length), command_id = ($command_id), command_name = ($static::smpp_command_map($command_id)), command_status = ($command_status), sequence_number = ($sequence_number)"
 
         switch $command_id {
             1 - 2 - 9 {                             ;# bind_* command
-                log local0. "Received unexpected bind command from SMSC peer ([IP::server_addr]:[TCP::server_port]).  Ignoring."
+                call smpp_log_debug "Received unexpected bind command from SMSC peer ([IP::server_addr]:[TCP::server_port]).  Ignoring."
             }
 
             2147483649 - 2147483650 - 2147483657 {  ;# bind_*_resp command
@@ -466,7 +478,7 @@ when SERVER_DATA {
             }
 
             6 {                                     ;# unbind command
-                log local0. "Received unbind request from peer ([IP::server_addr]:[TCP::server_port]).  Sending unbind_resp and closing transport."     ;# T=I
+                call smpp_log_debug "Received unbind request from peer ([IP::server_addr]:[TCP::server_port]).  Sending unbind_resp and closing transport."
                 TCP::respond [binary format IIII 16 0x80000006 0 $sequence_number]
                 TCP::close
                 return
@@ -500,45 +512,12 @@ when SERVER_DATA {
 }
 
 
-when SERVER_CLOSED {
-    # Table commands can set aside flow handling, causing the reaper to later try to re-close
-    # This can cause SERVER_CLOSED to run more than once for the same flow.  We only want to
-    # decrement the bind counting table by one, so put use a guard variable to ensure that we
-    # only perform the following steps once on this flow
-
-    # This appears to be a bug.  SERVER_CLOSED fires multiple times, but on subsequent times
-    # after the first, the Tcl context for the flow is gone.
-    if { [info exists server_close_guard] } {
-        call smpp_log_debug "Inside SERVER_CLOSED guard for [IP::server_addr]:[TCP::server_port]"
-
-        set binds [table incr "smpp-bound-smsc-count" -1]
-
-        if { $binds < 0 } {
-            log local0.warn "WARNING: Bound SMSC count is less than zero (unsigned count is $binds)."
-            # we cannot precisely get out of this situation because 'table set' is not atomic, but we'll try,
-            # knowing that the count may have changed between the time we did the previous 'table incr' and
-            # when we do this one
-            table set "smpp-bound-smsc-count" 0
-        }
-        elseif { $binds == 0 } {
-            log local0. "All smpp static peers disconnected"
-        }
-        else {                                                      ;# T=I
-            log local0. "Remaining bound SMSCs is ($binds)"         ;# T=I
-        }                                                           ;# T=I
-    }
-}
-
-
 when GENERICMESSAGE_INGRESS {
     if { !$is_request_msg } {
         call smpp_log_debug "GENERICMESSAGE_INGRESS for response message"
 
-        #binary scan [GENERICMESSAGE::message data] IIIIc* im_command_length im_command_id im_command_status im_sequence_number im_body
-        #set im_sequence_number [expr { $im_sequence_number & 0xffffffff }]
+        # extracted during *_DATA event
         set sequence_number [expr { $sequence_number & 0xffffffff }]
-
-        call smpp_log_debug "command_length = ($command_length), command_id = ($command_id), command_name = ($static::smpp_command_map($command_id)), command_status = ($command_status), sequence_number = ($sequence_number)"
 
         call smpp_log_debug "Attempting sequence rewrite table lookup for key ($proxy_side-$sequence_number)"
         if { [info exists seq_rewrite_table("$proxy_side-$sequence_number")] } {
@@ -549,19 +528,19 @@ when GENERICMESSAGE_INGRESS {
 
             binary scan [GENERICMESSAGE::message data] x16c* im_body
 
+            # perform sequence number rewrite
             GENERICMESSAGE::message data [binary format IIIIc* $command_length $command_id $command_status [lindex $seq_based_route_info 0] $im_body]
 
             unset seq_rewrite_table("$proxy_side-$sequence_number")
         }
         else {
-            log local0. "No matching sequence number rewrite found"     ;# T=I
+            call smpp_log_debug "No matching sequence number rewrite found.  Routing without sequence number rewrite."
         }
     }
 }
 
 
 when MR_INGRESS {
-    log local0. "The message route is [MR::message route]"
     set reverse_peer_name $peer_name
     set reverse_vs_or_tc_name $my_vs_or_tc_name
     set reverse_vs_or_tc_type $my_vs_or_tc_type
@@ -569,41 +548,16 @@ when MR_INGRESS {
     MR::store reverse_peer_name reverse_vs_or_tc_name reverse_vs_or_tc_type
 
     if { $is_request_msg } {
-        if { [serverside] } {
-            call smpp_log_debug "serverside, requires custom routing"
-
-            set bound_esme_list [table keys -subtable smpp-bound-esme-list]
-            set bel_len [llength $bound_esme_list]
-
-            call smpp_log_debug "bound_esme_list = ($bound_esme_list); bel_len = ($bel_len); last route_select_counter = ($route_select_counter)"
-
-            if { $bel_len == 0 } {
-                log local0.info "Received SMSC message but cannot deliver because no ESMEs are bound"
-                MR::message drop
-                return
-            }
-
-            set selected_esme [lindex $bound_esme_list [expr { [incr route_select_counter] % $bel_len }]]
-            set selected_esme_virtual [table lookup -subtable smpp-bound-esme-list $selected_esme]
-
-            call smpp_log_debug "Selected esme = ($selected_esme), virtual = ($selected_esme_virtual)"
-
-            MR::message route virtual $selected_esme_virtual host $selected_esme
-            log local0. "is_request_msg is true in MR_INGRESS event"
-        } else {
-          # forcing "persistence" for concatenated messages
-          if { $is_concatenated == 1 } {
-               log local0. "is_concatenated is 1 in MR::INGRESS event"
-                MR::message route config mr-transport-smpp host "[lindex $pool_member 0]:[lindex $pool_member 1]"
+        if { [serverside] && [$is_concatenated ==1] } {
+          call smpp_log_debug "routing concatenated message in MR::INGRESS event"
+          MR::message route config mr-transport-smpp host "[lindex $pool_member 0]:[lindex $pool_member 1]"
         }
         }
-    }
     elseif { [info exists seq_based_route_info] } {
         call smpp_log_debug "MR_INGRESS for response message"
         call smpp_log_debug "Re-routing to [lindex $seq_based_route_info 2] ([lindex $seq_based_route_info 3]) host ([lindex $seq_based_route_info 1])"
         MR::message route [lindex $seq_based_route_info 2] [lindex $seq_based_route_info 3] host [lindex $seq_based_route_info 1]
     }
-
 }
 
 
@@ -632,7 +586,7 @@ when GENERICMESSAGE_EGRESS {
         set seq_rewrite_table("$proxy_side-$rewritten_seq_num") [list $em_sequence_number $reverse_peer_name $reverse_vs_or_tc_type $reverse_vs_or_tc_name]
 
         if { [serverside] and $peer_state ne "bound" } {
-            log local0. "Queueing message for delivery once bind is completed"      ;# T=I
+            call smpp_log_debug "Queueing message for delivery once bind is completed"
             lappend queued_messages [binary format IIIIc* $em_command_length $em_command_id $em_command_status $rewritten_seq_num $em_body]
             GENERICMESSAGE::message drop
         }
@@ -678,7 +632,7 @@ ltm virtual vs-smpp {
         mr-router-smpp { }
     }
     rules {
-        smpp
+        __smpp_basic
     }
     source 0.0.0.0/0
     translate-address enabled
