@@ -46,5 +46,7 @@ sudo docker stop smppsim
 
 resources: 
 https://clouddocs.f5.com/api/irules/GENERICMESSAGE.html
+
 https://clouddocs.f5.com/api/irules/MR.html
+
 https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/bigip-service-provider-generic-message-administration-13-0-0/1.html
