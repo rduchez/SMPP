@@ -24,6 +24,7 @@ Requirements for this irule are as follows:
 Testing:
 this was achieved generating requests accross 2 servers using smppsim and opensmpp.
 a generic test script is used for concatenate messages using Python the SMPPLib 
+This configuration was tested and is known to work on TMOS v. 13.1
 
 Appendix - reference for testing
 
@@ -44,4 +45,6 @@ sudo docker run -d -p 2776:2775 -p 89:88 --name smppsim2 --rm wiredthing/smppsim
 sudo docker stop smppsim
 
 resources: 
-https://tstdmzdevcentral.olympus.f5net.com/wiki/iRules.MR__peer.ashx
+https://clouddocs.f5.com/api/irules/GENERICMESSAGE.html
+https://clouddocs.f5.com/api/irules/MR.html
+https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/bigip-service-provider-generic-message-administration-13-0-0/1.html
