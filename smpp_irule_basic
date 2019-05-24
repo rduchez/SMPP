@@ -2,7 +2,7 @@
 ## Simple Message Peer-to-Peer (SMPP) system_type based routing and bind management
 ##
 ## @version = 1
-## @date = 13 May 2019
+## @date = 24 May 2019
 ## @author = Vernon Wells (vwells@f5.com)
 ## @edited by Romain Duchez (romain@f5.com)
 ##
@@ -378,7 +378,8 @@ when MR_INGRESS {
     MR::store reverse_peer_name reverse_vs_or_tc_name reverse_vs_or_tc_type
 
     if { $is_request_msg } {
-        if { [serverside] && [$is_concatenated ==1] } {
+        log local0. "is contatenated is $is_concatenated"
+        if { [clientside] && ($is_concatenated ==1) } {
           call smpp_log_debug "routing concatenated message in MR::INGRESS event" 
           MR::message route config mr-transport-smpp host "[lindex $pool_member 0]:[lindex $pool_member 1]"
         }
