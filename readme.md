@@ -20,6 +20,7 @@ Requirements for this irule are as follows:
 2. Ability to send fragments of a multipart message to same downstream host (we need this for message assembly reasons) using message metadata
 3. Use protocol level heartbeat (e.g enquire_link packets) to determine liveness of binds to SMPP hosts
 
+At the time, the BIG-IP will forward each message individually to the SMSC.  This means that, if the EMSE, send multiple submit_sm messages in a single packet, the BIG-IP is going to forward each of these messages in its own packet/frame.  This is by design at this stage.  
 
 Testing:
 this was achieved generating requests accross 2 servers using smppsim and opensmpp.

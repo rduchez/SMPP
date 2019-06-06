@@ -2,7 +2,7 @@
 ## Simple Message Peer-to-Peer (SMPP) system_type based routing and bind management
 ##
 ## @version = 1
-## @date = 24 May 2019
+## @date = 13 May 2019
 ## @author = Vernon Wells (vwells@f5.com)
 ## @edited by Romain Duchez (romain@f5.com)
 ##
@@ -117,7 +117,7 @@ when CLIENT_DATA {
     TCP::collect
 
     # Need at least 16 octets for a header, and thus, at least 16 octets for a PDU
-    if { [string length $incoming_buf] >= 16 } {
+    while { [string length $incoming_buf] >= 16 } {
         binary scan $incoming_buf IIIIa* command_length command_id command_status sequence_number p
 
         # convert $command_id to its unsigned value
@@ -209,6 +209,11 @@ when CLIENT_DATA {
                     # is_concatenated is used in message routing below 
                     set is_concatenated 1
                     #GENERICMESSAGE::peer name temp_peer
+                    set multi_message 0
+                    #looking for multi_message packet
+                    set p [string range $p [expr [string first \xce $p]+1] end]
+                    binary scan $p c multi_message
+                    log local0. "multi_message is set to $multi_message"
                     }
                 # clear p as is no longer needed    
                 unset p

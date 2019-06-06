@@ -182,7 +182,7 @@ ltm rule __smpp_basic {
 ##
 ## This provides SMPP per-message load-balancing with response return matching.
 ## It also supports round-robin LB for SMPP requests from SMSC to ESME side.
-## An addition to the rule provides for persitence when concatenated messages traverse the BIG-IP and
+## An addition to the rule provides for persitence when concatenated messages traverse the BIG-IP and 
 ## are router to the same SMSC
 ##
 ## The following data-group is referenced in RULE_INIT:
@@ -211,7 +211,7 @@ ltm rule __smpp_basic {
 ##   + local_seq_number            : a sequence number for egress rewriting local to this virtual server.  This
 ##                                   is the last sequence number used
 ##   + p                           : processing payload - this variable holds what ever is left of the incoming payload after
-##                                   binary scan processing for the next step (e.g. extract values for UDH indicator etc.)
+##                                   binary scan processing for the next step (e.g. extract values for UDH indicator etc.) 
 ##   + seq_rewrite_table           : associative array, indexed by "$proxy_side-$rewritten_seq_num", value is
 ##                                   list of { $original_seq_num $server_peer_name "config" $server_transport_config_name }
 ##                                   There is no timeout method for this.  It is removed when a matching
@@ -252,7 +252,7 @@ proc smpp_log_debug {msg} {
 }
 
 when RULE_INIT {
-    # Clean up before shipping romain:
+    # Clean up before shipping romain: 
     set static::debug 1
     set static::smpp_config_elements_dg "smpp-config-elements"
 
@@ -287,7 +287,7 @@ when CLIENT_DATA {
     TCP::collect
 
     # Need at least 16 octets for a header, and thus, at least 16 octets for a PDU
-    if { [string length $incoming_buf] >= 16 } {
+    while { [string length $incoming_buf] >= 16 } {
         binary scan $incoming_buf IIIIa* command_length command_id command_status sequence_number p
 
         # convert $command_id to its unsigned value
@@ -299,16 +299,16 @@ when CLIENT_DATA {
             set is_request_msg false
         }
 
-        call smpp_log_debug "is_request_msg = ($is_request_msg); command_length = ($command_length); command_id = (0x[format %x $command_id]); command_name = ($static::smpp_command_map($command_id)); command_status = ($command_status); sequence_number = ($sequence_number)"
+        call smpp_log_debug "is_request_msg = ($is_request_msg); command_length = ($command_length); command_id = (0x[format %x $command_id]); command_name = ($static::smpp_command_map($command_id)); command_status = ($command_status); sequence_number = ($sequence_number)" 
 
         if { $command_length > [string length $incoming_buf] } {
-            call smpp_log_debug "Not enough octets yet collected for complete PDU"
+            call smpp_log_debug "Not enough octets yet collected for complete PDU"  
             return
         }
 
         switch $command_id {
             1 - 2 - 9 {                             ;# bind_* command
-                call smpp_log_debug "Received bind_* command"
+                call smpp_log_debug "Received bind_* command"  
 
                 if { $peer_state eq "waiting_for_bind" } {
                     set resp_command_id [expr { 0x80000000 | $command_id }]
@@ -318,9 +318,9 @@ when CLIENT_DATA {
                     # +1 is for null octet after system_id
                     set response_message_length [expr { 16 + [string length $my_system_id] + 1 }]
 
-                    call smpp_log_debug "resp_command_id = ($resp_command_id); resp_command_name = ($static::smpp_command_map($command_id)); my_system_id = ($my_system_id)"
+                    call smpp_log_debug "resp_command_id = ($resp_command_id); resp_command_name = ($static::smpp_command_map($command_id)); my_system_id = ($my_system_id)"     
 
-                    call smpp_log_debug "Responding to client with bind response"
+                    call smpp_log_debug "Responding to client with bind response"      
                     TCP::respond [binary format IIIIa*x $response_message_length $resp_command_id 0 $sequence_number $my_system_id]
 
                     set peer_state "bound"
@@ -347,7 +347,7 @@ when CLIENT_DATA {
             }
 
             21 {                                    ;# enquire_link command
-                call smpp_log_debug "Received enquire_link from peer ($peer_name).  Sending response."
+                call smpp_log_debug "Received enquire_link from peer ($peer_name).  Sending response."    
                 TCP::respond [binary format IIII 16 0x80000015 0 $sequence_number]
             }
 
@@ -370,17 +370,22 @@ when CLIENT_DATA {
                 # bitwise anding any value with 64, if the 7th bit is set will return 64 -
                 set udh [expr $udh & 64] ;# long message when the message is already 1
                 if { $static::debug > 0 } then {log local0. "udh is $udh" }
-                # once the UDH indicator bit is detected, it is used to choose a static pool member based on the last
-                # 2 digits of the destination number (stateless persistence)
+                # once the UDH indicator bit is detected, it is used to choose a static pool member based on the last 
+                # 2 digits of the destination number (stateless persistence) 
                 if { $udh eq 64 } {
                     set smpp_smsc_pool [class lookup "smsc-pool-name" $static::smpp_config_elements_dg]
                     set lbnumber [string range $dest [expr [string length $dest]-2] end] ;# use the last 2 digits of the destination address
                     set pool_member [lindex [active_members -list $smpp_smsc_pool] [expr $lbnumber % [active_members $smpp_smsc_pool]]];# select pool member (balancing)
-                    # is_concatenated is used in message routing below
+                    # is_concatenated is used in message routing below 
                     set is_concatenated 1
                     #GENERICMESSAGE::peer name temp_peer
+                    set multi_message 0
+                    #looking for multi_message packet
+                    set p [string range $p [expr [string first \xce $p]+1] end]
+                    binary scan $p c multi_message
+                    log local0. "multi_message is set to $multi_message"
                     }
-                # clear p as is no longer needed
+                # clear p as is no longer needed    
                 unset p
                 GENERICMESSAGE::message create [string range $incoming_buf 0 [expr { $command_length - 1 }]]
             }
@@ -548,8 +553,9 @@ when MR_INGRESS {
     MR::store reverse_peer_name reverse_vs_or_tc_name reverse_vs_or_tc_type
 
     if { $is_request_msg } {
-        if { [serverside] && [$is_concatenated ==1] } {
-          call smpp_log_debug "routing concatenated message in MR::INGRESS event"
+        log local0. "is contatenated is $is_concatenated"
+        if { [clientside] && ($is_concatenated ==1) } {
+          call smpp_log_debug "routing concatenated message in MR::INGRESS event" 
           MR::message route config mr-transport-smpp host "[lindex $pool_member 0]:[lindex $pool_member 1]"
         }
         }
