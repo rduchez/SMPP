@@ -1,8 +1,8 @@
 ##
 ## Simple Message Peer-to-Peer (SMPP) system_type based routing and bind management
 ##
-## @version = 1
-## @date = 13 May 2019
+## @version = 2019061301
+## @date = 13 June 2019
 ## @author = Vernon Wells (vwells@f5.com)
 ## @edited by Romain Duchez (romain@f5.com)
 ##
@@ -271,7 +271,7 @@ when SERVER_DATA {
     TCP::collect
 
     # need at least 16 octets for a header, and thus, at least 16 octets for a PDU
-    if { [string length $incoming_buf] >= 16 } {
+    while { [string length $incoming_buf] >= 16 } {
         binary scan $incoming_buf IIII command_length command_id command_status sequence_number
 
         set command_length [expr { $command_length & 0xffffffff }]
