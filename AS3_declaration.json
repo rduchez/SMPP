@@ -50,7 +50,7 @@
           "SMPP_iRule": {
               "class": "iRule",
               "iRule": {
-                  "url": "https://raw.githubusercontent.com/rduchez/SMPP/master/smpp_irule"
+                  "url": "https://raw.githubusercontent.com/rduchez/SMPP/master/smpp_irule_basic"
               }
           }
         }
