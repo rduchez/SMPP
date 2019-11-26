@@ -112,12 +112,14 @@ when CLIENT_ACCEPTED {
 
 when CLIENT_DATA {
     append incoming_buf [TCP::payload]
-
+    log local0. "before loop, incoming_buf is $incoming_buf"
+    TCP::payload replace 0 [TCP::payload length] ""
     TCP::release
     TCP::collect
-
+    set while_track 1
     # Need at least 16 octets for a header, and thus, at least 16 octets for a PDU
     while { [string length $incoming_buf] >= 16 } {
+        log local0. "while loop tracker: $while_track"
         binary scan $incoming_buf IIIIa* command_length command_id command_status sequence_number p
 
         # convert $command_id to its unsigned value
@@ -129,7 +131,7 @@ when CLIENT_DATA {
             set is_request_msg false
         }
 
-        call smpp_log_debug "is_request_msg = ($is_request_msg); command_length = ($command_length); command_id = (0x[format %x $command_id]); command_name = ($static::smpp_command_map($command_id)); command_status = ($command_status); sequence_number = ($sequence_number)" 
+        call smpp_log_debug "is_request_msg = ($is_request_msg); command_length = ($command_length); command_id = (0x[format %x $command_id]); command_name = ($static::smpp_command_map($command_id)); command_status = ($command_status); sequence_number = ($sequence_number); from = [IP::client_addr]:[TCP::client_port]" 
 
         if { $command_length > [string length $incoming_buf] } {
             call smpp_log_debug "Not enough octets yet collected for complete PDU"  
@@ -138,7 +140,7 @@ when CLIENT_DATA {
 
         switch $command_id {
             1 - 2 - 9 {                             ;# bind_* command
-                call smpp_log_debug "Received bind_* command"  
+                call smpp_log_debug "Received bind_* command from = [IP::client_addr]:[TCP::client_port]"  
 
                 if { $peer_state eq "waiting_for_bind" } {
                     set resp_command_id [expr { 0x80000000 | $command_id }]
@@ -194,7 +196,7 @@ when CLIENT_DATA {
                 binary scan $p ccA* dton dnpi p
                 set dest [getfield $p \x00 1] ;# get destination address
                 set p [string range $p [expr [string first \x00 $p]+1] end]
-                if { $static::debug > 0 } then {log local0. "p is $p" }
+                if { $static::debug > 0 } then {log local0. "p is $p and source is from = [IP::client_addr]:[TCP::client_port]" }
                 binary scan $p c udh
                 # UDH indicator is set if 7th bit of the octet is set with a dec value of 64
                 # bitwise anding any value with 64, if the 7th bit is set will return 64 -
@@ -223,7 +225,11 @@ when CLIENT_DATA {
 
         # remove current PDU from incoming buffer
         set incoming_buf [string range $incoming_buf $command_length end]
+        incr while_track
+        log local0. "after loop, incoming_buf is $incoming_buf"
     }
+    
+    
 }
 
 
@@ -266,7 +272,7 @@ when SERVER_CONNECTED {
 
 when SERVER_DATA {
     append incoming_buf [TCP::payload]
-
+    TCP::payload replace 0 [TCP::payload length] ""
     TCP::release
     TCP::collect
 
@@ -452,5 +458,6 @@ when MR_FAILED {
     }
     else {
         log local0. "MR_FAILED for serverside incoming message: [MR::message status]"
+        MR::message drop
     }
 }
