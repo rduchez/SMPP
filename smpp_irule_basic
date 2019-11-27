@@ -1,8 +1,8 @@
 ##
 ## Simple Message Peer-to-Peer (SMPP) system_type based routing and bind management
 ##
-## @version = 2019061301
-## @date = 13 June 2019
+## @version = 2019112601
+## @date = 26 November 2019
 ## @author = Vernon Wells (vwells@f5.com)
 ## @edited by Romain Duchez (romain@f5.com)
 ##
